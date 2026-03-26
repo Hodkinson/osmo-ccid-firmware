@@ -39,6 +39,17 @@
 #include "ccid_device.h"
 #include "usb_descriptors.h"
 
+#define RESET_REASON_MAGIC      0xB007CA00u
+#define RESET_REASON_EXTPOWER   0xB007CA01u
+#define RESET_REASON_PANIC      0xB007CA02u
+#define RESET_REASON_HARDFAULT  0xB007CA03u
+#define RESET_REASON_BUSFAULT   0xB007CA04u
+#define RESET_REASON_USAGEFAULT 0xB007CA05u
+#define RESET_REASON_NMI        0xB007CA06u
+#define RESET_REASON_FALLBACK   0xB007CA07u
+
+__attribute__((section(".bkupram"))) static volatile uint32_t reset_reason;
+
 volatile bool break_on_panic = false;
 
 /* To have the panic handler as simple as possible to also call
@@ -55,32 +66,38 @@ static inline void _panic_handler(void)
 
 static void panic_handler(const char *fmt, va_list args)
 {
+	reset_reason = RESET_REASON_PANIC;
 	_panic_handler();
 }
 
 /* Use functions to have the fault type available in the backtrace. */
 void NonMaskableInt_Handler(void)
 {
+	reset_reason = RESET_REASON_NMI;
 	_panic_handler();
 }
 
 void HardFault_Handler(void)
 {
+	reset_reason = RESET_REASON_HARDFAULT;
 	_panic_handler();
 }
 
 void BusFault_Handler(void)
 {
+	reset_reason = RESET_REASON_BUSFAULT;
 	_panic_handler();
 }
 
 void UsageFault_Handler(void)
 {
+	reset_reason = RESET_REASON_USAGEFAULT;
 	_panic_handler();
 }
 
 void Fallback_Handler(void)
 {
+	reset_reason = RESET_REASON_FALLBACK;
 	_panic_handler();
 }
 
@@ -313,7 +330,8 @@ static void ccid_out_read_compl(const uint8_t ep, enum usb_xfer_code code, uint3
 	}
 
 	/* add just-received msg to tail of endpoint queue */
-	OSMO_ASSERT(msg);
+	if (!msg)
+		return;
 	/* update msgb with the amount of data received */
 	msgb_put(msg, transferred);
 	/* append to list of pending-to-be-handed messages */
@@ -435,6 +453,7 @@ void init_extpower_detect(void)
 void poll_extpower_detect(void)
 {
 	if (old_extpwer_state != gpio_get_pin_level(MUX_STAT)) {
+		reset_reason = RESET_REASON_EXTPOWER;
 		NVIC_SystemReset();
 	}
 }
@@ -698,6 +717,19 @@ DWT->FUNCTION1 =    (0b10 << DWT_FUNCTION_DATAVSIZE_Pos) |  /* DATAVSIZE 10 - dw
 		"=============================================================================\n\r");
 	printf("Chip ID: %s\r\n", sernr_buf);
 	printf("Reset cause: %s\r\n", rstcause_buf);
+	if ((reset_reason & 0xFFFFFF00u) == RESET_REASON_MAGIC) {
+		switch (reset_reason) {
+		case RESET_REASON_EXTPOWER:   printf("FW reset cause: extpower change\r\n"); break;
+		case RESET_REASON_PANIC:      printf("FW reset cause: panic/assert\r\n"); break;
+		case RESET_REASON_HARDFAULT:  printf("FW reset cause: HardFault\r\n"); break;
+		case RESET_REASON_BUSFAULT:   printf("FW reset cause: BusFault\r\n"); break;
+		case RESET_REASON_USAGEFAULT: printf("FW reset cause: UsageFault\r\n"); break;
+		case RESET_REASON_NMI:        printf("FW reset cause: NMI\r\n"); break;
+		case RESET_REASON_FALLBACK:   printf("FW reset cause: unhandled IRQ\r\n"); break;
+		default:                      printf("FW reset cause: unknown 0x%08lx\r\n", reset_reason); break;
+		}
+		reset_reason = 0;
+	}
 
 	talloc_enable_null_tracking();
 	g_tall_ctx = talloc_named_const(NULL, 0, "global");
