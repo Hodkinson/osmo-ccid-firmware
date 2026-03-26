@@ -313,7 +313,8 @@ static void ccid_out_read_compl(const uint8_t ep, enum usb_xfer_code code, uint3
 	}
 
 	/* add just-received msg to tail of endpoint queue */
-	OSMO_ASSERT(msg);
+	if (!msg)
+        return;
 	/* update msgb with the amount of data received */
 	msgb_put(msg, transferred);
 	/* append to list of pending-to-be-handed messages */
